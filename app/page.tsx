@@ -1,41 +1,43 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useEffect, useState } from "react"
+import { AlertCircle, CheckCircle2, Clock, Copy, ExternalLink, Loader2 } from "lucide-react"
+
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Slider } from "@/components/ui/slider"
-import { Switch } from "@/components/ui/switch"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Textarea } from "@/components/ui/textarea"
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
-import { Skeleton } from "@/components/ui/skeleton"
 import { Progress } from "@/components/ui/progress"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { useToast } from "@/hooks/use-toast"
+import { Skeleton } from "@/components/ui/skeleton"
+import { Slider } from "@/components/ui/slider"
+import { Textarea } from "@/components/ui/textarea"
 import { Toaster } from "@/components/ui/toaster"
-import { Copy, ExternalLink, AlertCircle, Clock, CheckCircle2, Loader2 } from "lucide-react"
+import { useToast } from "@/hooks/use-toast"
 
 type Region = "europe" | "mena" | "africa"
 
-interface GenerationRequest {
-  regions: string[]
+interface GenerationRequestV2 {
+  regions: Region[]
   customTag?: string
-  rssUrls: string[]
-  xQueries: string[]
-  limitPerSource: number
-  enableAiFallbackImages: boolean
-  gammaInstructions: string
+  limitPerRegion: number
+  gammaInstructions?: string
 }
 
-interface GenerationStatus {
+interface GenerationStatusV2 {
   generationId: string
   status: "queued" | "running" | "completed" | "failed"
+  progress: number
   gammaUrl?: string
+  pdfUrl?: string
   error?: string
-  progress?: number
+  metrics?: {
+    fetchedCount: number
+    generatedImageCount: number
+    uploadedImageCount: number
+  }
 }
 
 interface HistoryItem {
@@ -44,159 +46,138 @@ interface HistoryItem {
   timestamp: Date
 }
 
-const DEMO_RSS_URLS = `https://www.aljazeera.com/xml/rss/all.xml
-https://feeds.bbci.co.uk/news/world/africa/rss.xml
-https://www.france24.com/en/rss`
-
-const DEMO_X_QUERIES = `(Europe OR EU) has:images lang:en
-(MENA OR "Middle East") has:images lang:en
-Africa has:images lang:en`
+function regionLabel(region: Region): string {
+  switch (region) {
+    case "europe":
+      return "欧洲"
+    case "mena":
+      return "中东北非"
+    case "africa":
+      return "非洲"
+  }
+}
 
 export default function GeoIntelBriefPage() {
   const { toast } = useToast()
-  
-  // Theme state
+
   const [theme, setTheme] = useState("minimal")
-  
-  // Config state
+
   const [regions, setRegions] = useState<Region[]>(["europe"])
   const [customTag, setCustomTag] = useState("")
-  const [rssUrls, setRssUrls] = useState("")
-  const [xQueries, setXQueries] = useState("")
-  const [limitPerSource, setLimitPerSource] = useState(12)
-  const [enableAiFallbackImages, setEnableAiFallbackImages] = useState(true)
+  const [limitPerRegion, setLimitPerRegion] = useState(12)
   const [gammaInstructions, setGammaInstructions] = useState(
-    "Make a clean one-page microsite with a TOC by region. Keep each card short and scannable. No overly long paragraphs."
+    "生成一个简洁的单页站点，按地区提供目录。每张卡片简短易扫读，避免过长段落。"
   )
-  
-  // Generation state
+
   const [isGenerating, setIsGenerating] = useState(false)
   const [generationId, setGenerationId] = useState<string | null>(null)
-  const [status, setStatus] = useState<GenerationStatus | null>(null)
+  const [status, setStatus] = useState<GenerationStatusV2 | null>(null)
   const [history, setHistory] = useState<HistoryItem[]>([])
 
-  // Polling for status
   useEffect(() => {
     if (!generationId || !isGenerating) return
-    
+
     const pollStatus = async () => {
       try {
         const response = await fetch(`/api/brief/status/${generationId}`)
-        const data: GenerationStatus = await response.json()
-        
+        const data: GenerationStatusV2 = await response.json()
+
         setStatus(data)
-        
+
         if (data.status === "completed") {
           setIsGenerating(false)
           toast({
-            title: "Microsite ready!",
-            description: "Your Gamma microsite has been generated successfully.",
+            title: "站点已生成",
+            description: "你的 Gamma 简报站点已成功生成。",
           })
-          
+
           if (data.gammaUrl) {
-            setHistory(prev => [
-              { id: generationId, gammaUrl: data.gammaUrl!, timestamp: new Date() },
-              ...prev.slice(0, 4)
-            ])
+            setHistory((prev) => [{ id: generationId, gammaUrl: data.gammaUrl!, timestamp: new Date() }, ...prev.slice(0, 4)])
           }
         } else if (data.status === "failed") {
           setIsGenerating(false)
           toast({
-            title: "Generation failed",
-            description: data.error || "An error occurred during generation.",
+            title: "生成失败",
+            description: data.error || "生成过程中发生错误。",
             variant: "destructive",
           })
         }
       } catch (error) {
-        console.error("[v0] Error polling status:", error)
+        console.error("[page] Error polling status:", error)
       }
     }
-    
+
     const interval = setInterval(pollStatus, 2500)
-    pollStatus() // Poll immediately
-    
+    void pollStatus()
+
     return () => clearInterval(interval)
   }, [generationId, isGenerating, toast])
 
   const handleRegionToggle = (region: Region) => {
-    setRegions(prev =>
-      prev.includes(region)
-        ? prev.filter(r => r !== region)
-        : [...prev, region]
-    )
+    setRegions((prev) => (prev.includes(region) ? prev.filter((r) => r !== region) : [...prev, region]))
   }
 
   const handleGenerate = async () => {
-    // Validate
-    const rssUrlList = rssUrls.split("\n").filter(line => line.trim())
-    const xQueryList = xQueries.split("\n").filter(line => line.trim())
-    
-    if (rssUrlList.length === 0 && xQueryList.length === 0) {
+    if (!regions.length) {
       toast({
-        title: "No sources provided",
-        description: "Please add at least one RSS URL or X query.",
+        title: "未选择地区",
+        description: "请至少选择一个地区。",
         variant: "destructive",
       })
       return
     }
-    
-    const request: GenerationRequest = {
-      regions: regions.length > 0 ? regions : ["europe"],
+
+    const request: GenerationRequestV2 = {
+      regions,
       customTag: customTag.trim() || undefined,
-      rssUrls: rssUrlList,
-      xQueries: xQueryList,
-      limitPerSource,
-      enableAiFallbackImages,
-      gammaInstructions,
+      limitPerRegion,
+      gammaInstructions: gammaInstructions.trim() || undefined,
     }
-    
+
     try {
       setIsGenerating(true)
       setStatus(null)
-      
+
       const response = await fetch("/api/brief/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(request),
       })
-      
+
       if (!response.ok) {
-        throw new Error("Failed to start generation")
+        const payload = (await response.json().catch(() => ({}))) as { error?: string }
+        throw new Error(payload.error || "启动生成失败")
       }
-      
-      const data = await response.json()
+
+      const data = (await response.json()) as { generationId: string }
       setGenerationId(data.generationId)
-      
+
       toast({
-        title: "Generation started",
-        description: `Job ID: ${data.generationId}`,
+        title: "已开始生成",
+        description: `任务 ID：${data.generationId}`,
       })
     } catch (error) {
       setIsGenerating(false)
       toast({
-        title: "Error",
-        description: error instanceof Error ? error.message : "Failed to start generation",
+        title: "错误",
+        description: error instanceof Error ? error.message : "启动生成失败",
         variant: "destructive",
       })
     }
   }
 
   const copyToClipboard = (text: string) => {
-    navigator.clipboard.writeText(text)
-    toast({
-      title: "Copied!",
-      description: "Link copied to clipboard",
-    })
+    void navigator.clipboard.writeText(text)
+    toast({ title: "已复制", description: "链接已复制到剪贴板" })
   }
 
   const getStatusIcon = () => {
     if (!status) return null
-    
     switch (status.status) {
       case "queued":
         return <Clock className="h-5 w-5 text-yellow-600" />
       case "running":
-        return <Loader2 className="h-5 w-5 text-blue-600 animate-spin" />
+        return <Loader2 className="h-5 w-5 animate-spin text-blue-600" />
       case "completed":
         return <CheckCircle2 className="h-5 w-5 text-green-600" />
       case "failed":
@@ -204,217 +185,106 @@ export default function GeoIntelBriefPage() {
     }
   }
 
-  const getStatusProgress = () => {
-    if (!status) return 0
-    
+  const getStatusText = () => {
+    if (!status) return ""
     switch (status.status) {
       case "queued":
-        return 10
+        return "排队中"
       case "running":
-        return status.progress || 50
+        return "执行中"
       case "completed":
-        return 100
+        return "已完成"
       case "failed":
-        return 0
+        return "失败"
     }
   }
 
   return (
     <>
       <div className="min-h-screen bg-background">
-        {/* Sticky Header */}
         <header className="sticky top-0 z-50 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
           <div className="container mx-auto flex h-16 items-center justify-between px-4">
             <div>
               <h1 className="text-lg font-semibold md:text-xl">Geo-Intel Brief</h1>
-              <p className="text-xs text-muted-foreground md:text-sm">
-                Europe / MENA / Africa → RSS + X + Websites → Image-first → Gamma
-              </p>
+              <p className="text-xs text-muted-foreground md:text-sm">Google RSS（固定地区模板）→ CogView-4 → Supabase → Gamma</p>
             </div>
             <div className="flex items-center gap-2 md:gap-4">
               <Button variant="ghost" size="sm" className="text-xs md:text-sm">
-                Docs
+                文档
               </Button>
               <Select value={theme} onValueChange={setTheme}>
                 <SelectTrigger className="w-[100px] md:w-[130px]">
-                  <SelectValue placeholder="Theme" />
+                  <SelectValue placeholder="主题" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="minimal">Minimal</SelectItem>
-                  <SelectItem value="dark">Dark</SelectItem>
-                  <SelectItem value="modern">Modern</SelectItem>
+                  <SelectItem value="minimal">简约</SelectItem>
+                  <SelectItem value="dark">深色</SelectItem>
+                  <SelectItem value="modern">现代</SelectItem>
                 </SelectContent>
               </Select>
             </div>
           </div>
         </header>
 
-        {/* Main Content */}
         <main className="container mx-auto p-4 md:p-6">
           <div className="grid gap-6 lg:grid-cols-2">
-            {/* LEFT COLUMN */}
             <div className="space-y-6">
-              {/* Regions Card */}
               <Card>
                 <CardHeader>
-                  <CardTitle>Regions</CardTitle>
-                  <CardDescription>Select geographic areas to monitor</CardDescription>
+                  <CardTitle>地区</CardTitle>
+                  <CardDescription>仅支持固定 Google RSS 地区模板</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <div className="space-y-3">
-                    <div className="flex items-center space-x-2">
-                      <Checkbox
-                        id="europe"
-                        checked={regions.includes("europe")}
-                        onCheckedChange={() => handleRegionToggle("europe")}
-                      />
-                      <Label htmlFor="europe" className="text-sm font-normal cursor-pointer">
-                        Europe
-                      </Label>
-                    </div>
-                    <div className="flex items-center space-x-2">
-                      <Checkbox
-                        id="mena"
-                        checked={regions.includes("mena")}
-                        onCheckedChange={() => handleRegionToggle("mena")}
-                      />
-                      <Label htmlFor="mena" className="text-sm font-normal cursor-pointer">
-                        MENA (Arab World)
-                      </Label>
-                    </div>
-                    <div className="flex items-center space-x-2">
-                      <Checkbox
-                        id="africa"
-                        checked={regions.includes("africa")}
-                        onCheckedChange={() => handleRegionToggle("africa")}
-                      />
-                      <Label htmlFor="africa" className="text-sm font-normal cursor-pointer">
-                        Africa
-                      </Label>
-                    </div>
+                    {(["europe", "mena", "africa"] as Region[]).map((region) => (
+                      <div key={region} className="flex items-center space-x-2">
+                        <Checkbox id={region} checked={regions.includes(region)} onCheckedChange={() => handleRegionToggle(region)} />
+                        <Label htmlFor={region} className="cursor-pointer text-sm font-normal">
+                          {regionLabel(region)}
+                        </Label>
+                      </div>
+                    ))}
                   </div>
-                  
+
                   <div className="space-y-2">
                     <Label htmlFor="customTag" className="text-sm">
-                      Custom tag (optional)
+                      自定义标签（可选）
                     </Label>
                     <Input
                       id="customTag"
-                      placeholder="e.g., 'URGENT' or 'PRIORITY'"
+                      placeholder="例如：紧急 / 重点观察"
                       value={customTag}
                       onChange={(e) => setCustomTag(e.target.value)}
                       disabled={isGenerating}
                     />
-                    <p className="text-xs text-muted-foreground">
-                      Will be attached to all items as region label if filled
-                    </p>
                   </div>
                 </CardContent>
               </Card>
 
-              {/* Sources Card */}
               <Card>
                 <CardHeader>
-                  <CardTitle>Sources</CardTitle>
-                  <CardDescription>Configure RSS feeds and X queries</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <Tabs defaultValue="rss" className="w-full">
-                    <TabsList className="grid w-full grid-cols-2">
-                      <TabsTrigger value="rss">RSS</TabsTrigger>
-                      <TabsTrigger value="x">X (Twitter)</TabsTrigger>
-                    </TabsList>
-                    
-                    <TabsContent value="rss" className="space-y-4">
-                      <div className="space-y-2">
-                        <Label htmlFor="rssUrls">RSS URLs (one per line)</Label>
-                        <Textarea
-                          id="rssUrls"
-                          placeholder="https://example.com/feed.xml"
-                          rows={6}
-                          value={rssUrls}
-                          onChange={(e) => setRssUrls(e.target.value)}
-                          disabled={isGenerating}
-                        />
-                      </div>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => setRssUrls(DEMO_RSS_URLS)}
-                        disabled={isGenerating}
-                      >
-                        Load Demo URLs
-                      </Button>
-                    </TabsContent>
-                    
-                    <TabsContent value="x" className="space-y-4">
-                      <div className="space-y-2">
-                        <Label htmlFor="xQueries">X queries (one per line)</Label>
-                        <Textarea
-                          id="xQueries"
-                          placeholder="(Europe OR EU) has:images"
-                          rows={6}
-                          value={xQueries}
-                          onChange={(e) => setXQueries(e.target.value)}
-                          disabled={isGenerating}
-                        />
-                        <p className="text-xs text-muted-foreground">
-                          Use has:images when possible
-                        </p>
-                      </div>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => setXQueries(DEMO_X_QUERIES)}
-                        disabled={isGenerating}
-                      >
-                        Load Demo Queries
-                      </Button>
-                    </TabsContent>
-                  </Tabs>
-                </CardContent>
-              </Card>
-
-              {/* Options Card */}
-              <Card>
-                <CardHeader>
-                  <CardTitle>Options</CardTitle>
-                  <CardDescription>Fine-tune generation parameters</CardDescription>
+                  <CardTitle>选项</CardTitle>
+                  <CardDescription>控制每个地区采集数量与 Gamma 指令</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-6">
                   <div className="space-y-2">
                     <div className="flex items-center justify-between">
-                      <Label htmlFor="limitPerSource">Limit per source</Label>
-                      <span className="text-sm text-muted-foreground">{limitPerSource}</span>
+                      <Label htmlFor="limitPerRegion">每个地区条数上限</Label>
+                      <span className="text-sm text-muted-foreground">{limitPerRegion}</span>
                     </div>
                     <Slider
-                      id="limitPerSource"
+                      id="limitPerRegion"
                       min={5}
                       max={20}
                       step={1}
-                      value={[limitPerSource]}
-                      onValueChange={([value]) => setLimitPerSource(value)}
+                      value={[limitPerRegion]}
+                      onValueChange={([value]) => setLimitPerRegion(value)}
                       disabled={isGenerating}
                     />
                   </div>
-                  
-                  <div className="flex items-center justify-between">
-                    <div className="space-y-0.5">
-                      <Label htmlFor="aiFallback">AI fallback images when missing</Label>
-                      <p className="text-xs text-muted-foreground">
-                        Generate images with AI if source has none
-                      </p>
-                    </div>
-                    <Switch
-                      id="aiFallback"
-                      checked={enableAiFallbackImages}
-                      onCheckedChange={setEnableAiFallbackImages}
-                      disabled={isGenerating}
-                    />
-                  </div>
-                  
+
                   <div className="space-y-2">
-                    <Label htmlFor="gammaInstructions">Gamma additional instructions</Label>
+                    <Label htmlFor="gammaInstructions">Gamma 附加指令</Label>
                     <Textarea
                       id="gammaInstructions"
                       rows={4}
@@ -426,21 +296,13 @@ export default function GeoIntelBriefPage() {
                 </CardContent>
               </Card>
 
-              {/* Preview Card */}
               <Card>
                 <CardHeader>
-                  <CardTitle>Preview (client-side only)</CardTitle>
-                  <CardDescription>Preview of items during generation</CardDescription>
+                  <CardTitle>处理预览</CardTitle>
+                  <CardDescription>任务运行期间显示处理中占位</CardDescription>
                 </CardHeader>
                 <CardContent>
-                  {!isGenerating && !status && (
-                    <div className="py-8 text-center text-muted-foreground">
-                      <p className="text-sm">
-                        After you click Generate, items will appear here once the job starts.
-                      </p>
-                    </div>
-                  )}
-                  
+                  {!isGenerating && !status && <p className="py-8 text-center text-sm text-muted-foreground">点击“生成”后，状态信息会显示在右侧。</p>}
                   {isGenerating && (
                     <div className="space-y-3">
                       {[...Array(6)].map((_, i) => (
@@ -459,60 +321,63 @@ export default function GeoIntelBriefPage() {
               </Card>
             </div>
 
-            {/* RIGHT COLUMN */}
             <div className="space-y-6">
-              {/* Generate Button */}
               <Card>
                 <CardHeader>
-                  <CardTitle>Generate & Results</CardTitle>
-                  <CardDescription>Start the generation process</CardDescription>
+                  <CardTitle>生成与结果</CardTitle>
+                  <CardDescription>手动触发生成流程</CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <Button
-                    className="w-full"
-                    size="lg"
-                    onClick={handleGenerate}
-                    disabled={isGenerating}
-                  >
+                  <Button className="w-full" size="lg" onClick={handleGenerate} disabled={isGenerating}>
                     {isGenerating ? (
                       <>
                         <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                        Generating...
+                        生成中...
                       </>
                     ) : (
-                      "Generate Gamma Microsite"
+                      "生成 Gamma 简报站点"
                     )}
                   </Button>
                 </CardContent>
               </Card>
 
-              {/* Status Panel */}
               {generationId && (
                 <Card>
                   <CardHeader>
                     <CardTitle className="flex items-center gap-2">
-                      Status
+                      状态
                       {getStatusIcon()}
                     </CardTitle>
                   </CardHeader>
                   <CardContent className="space-y-4">
                     <div>
-                      <p className="text-xs text-muted-foreground mb-1">Generation ID</p>
-                      <p className="text-sm font-mono break-all">{generationId}</p>
+                      <p className="mb-1 text-xs text-muted-foreground">任务 ID</p>
+                      <p className="break-all font-mono text-sm">{generationId}</p>
                     </div>
-                    
+
                     {status && (
                       <>
                         <div className="space-y-2">
                           <div className="flex items-center justify-between">
-                            <p className="text-sm font-medium">
-                              Status: <span className="capitalize">{status.status}</span>
-                            </p>
-                            <p className="text-sm text-muted-foreground">
-                              {getStatusProgress()}%
-                            </p>
+                            <p className="text-sm font-medium">状态：{getStatusText()}</p>
+                            <p className="text-sm text-muted-foreground">{status.progress}%</p>
                           </div>
-                          <Progress value={getStatusProgress()} />
+                          <Progress value={status.progress} />
+                        </div>
+
+                        <div className="grid grid-cols-3 gap-2 rounded border bg-muted/20 p-3 text-center text-xs">
+                          <div>
+                            <p className="text-muted-foreground">抓取</p>
+                            <p className="font-semibold">{status.metrics?.fetchedCount ?? 0}</p>
+                          </div>
+                          <div>
+                            <p className="text-muted-foreground">生成图</p>
+                            <p className="font-semibold">{status.metrics?.generatedImageCount ?? 0}</p>
+                          </div>
+                          <div>
+                            <p className="text-muted-foreground">已上传</p>
+                            <p className="font-semibold">{status.metrics?.uploadedImageCount ?? 0}</p>
+                          </div>
                         </div>
                       </>
                     )}
@@ -520,45 +385,39 @@ export default function GeoIntelBriefPage() {
                 </Card>
               )}
 
-              {/* Result Panel */}
               {status?.status === "completed" && status.gammaUrl && (
                 <Card className="border-green-200 bg-green-50/50 dark:border-green-800 dark:bg-green-950/20">
                   <CardHeader>
-                    <CardTitle className="text-green-900 dark:text-green-100">
-                      Microsite Ready!
-                    </CardTitle>
+                    <CardTitle className="text-green-900 dark:text-green-100">站点已就绪</CardTitle>
                   </CardHeader>
                   <CardContent className="space-y-3">
                     <div className="flex gap-2">
-                      <Button
-                        className="flex-1"
-                        onClick={() => window.open(status.gammaUrl, "_blank")}
-                      >
+                      <Button className="flex-1" onClick={() => window.open(status.gammaUrl, "_blank")}> 
                         <ExternalLink className="mr-2 h-4 w-4" />
-                        Open Microsite
+                        打开站点
                       </Button>
-                      <Button
-                        variant="outline"
-                        size="icon"
-                        onClick={() => copyToClipboard(status.gammaUrl!)}
-                      >
+                      <Button variant="outline" size="icon" onClick={() => copyToClipboard(status.gammaUrl!)}>
                         <Copy className="h-4 w-4" />
                       </Button>
                     </div>
+                    {status.pdfUrl && (
+                      <Button variant="outline" className="w-full" onClick={() => window.open(status.pdfUrl, "_blank")}>
+                        打开 PDF 导出
+                      </Button>
+                    )}
                     <div className="rounded border bg-background p-3">
-                      <p className="text-xs font-mono break-all">{status.gammaUrl}</p>
+                      <p className="break-all font-mono text-xs">{status.gammaUrl}</p>
                     </div>
                   </CardContent>
                 </Card>
               )}
 
-              {/* Error Panel */}
               {status?.status === "failed" && (
                 <Alert variant="destructive">
                   <AlertCircle className="h-4 w-4" />
-                  <AlertTitle>Generation Failed</AlertTitle>
+                  <AlertTitle>生成失败</AlertTitle>
                   <AlertDescription>
-                    {status.error || "An unknown error occurred during generation."}
+                    {status.error || "生成过程中发生未知错误。"}
                     <Button
                       variant="outline"
                       size="sm"
@@ -569,47 +428,31 @@ export default function GeoIntelBriefPage() {
                         setIsGenerating(false)
                       }}
                     >
-                      Try Again
+                      重试
                     </Button>
                   </AlertDescription>
                 </Alert>
               )}
 
-              {/* History */}
               {history.length > 0 && (
                 <Card>
                   <CardHeader>
-                    <CardTitle className="text-base">History</CardTitle>
-                    <CardDescription>Last 5 generated microsites</CardDescription>
+                    <CardTitle className="text-base">历史记录</CardTitle>
+                    <CardDescription>最近 5 次生成的站点</CardDescription>
                   </CardHeader>
                   <CardContent>
                     <div className="space-y-2">
                       {history.map((item) => (
-                        <div
-                          key={item.id}
-                          className="flex items-center justify-between gap-2 rounded-lg border p-3"
-                        >
+                        <div key={item.id} className="flex items-center justify-between gap-2 rounded-lg border p-3">
                           <div className="flex-1 overflow-hidden">
-                            <p className="text-xs text-muted-foreground">
-                              {item.timestamp.toLocaleString()}
-                            </p>
-                            <p className="truncate text-xs font-mono">{item.gammaUrl}</p>
+                            <p className="text-xs text-muted-foreground">{item.timestamp.toLocaleString("zh-CN")}</p>
+                            <p className="truncate font-mono text-xs">{item.gammaUrl}</p>
                           </div>
                           <div className="flex gap-1">
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8 flex-shrink-0"
-                              onClick={() => window.open(item.gammaUrl, "_blank")}
-                            >
+                            <Button variant="ghost" size="icon" className="h-8 w-8 flex-shrink-0" onClick={() => window.open(item.gammaUrl, "_blank")}>
                               <ExternalLink className="h-3 w-3" />
                             </Button>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8 flex-shrink-0"
-                              onClick={() => copyToClipboard(item.gammaUrl)}
-                            >
+                            <Button variant="ghost" size="icon" className="h-8 w-8 flex-shrink-0" onClick={() => copyToClipboard(item.gammaUrl)}>
                               <Copy className="h-3 w-3" />
                             </Button>
                           </div>
@@ -623,7 +466,7 @@ export default function GeoIntelBriefPage() {
           </div>
         </main>
       </div>
-      
+
       <Toaster />
     </>
   )
